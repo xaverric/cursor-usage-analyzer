@@ -1,0 +1,4 @@
+node_modules/
+cursor-logs-export/
+*.log
+.DS_Store

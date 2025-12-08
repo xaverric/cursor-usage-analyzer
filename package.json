@@ -1,0 +1,28 @@
+{
+  "name": "cursor-usage-analyzer",
+  "version": "0.1.0",
+  "description": "Analyze and visualize your Cursor AI editor usage with interactive reports",
+  "main": "analyze.js",
+  "type": "module",
+  "bin": {
+    "cursor-usage-analyzer": "./analyze.js"
+  },
+  "scripts": {
+    "analyze": "node analyze.js",
+    "today": "node analyze.js --today",
+    "yesterday": "node analyze.js --yesterday",
+    "this-month": "node analyze.js --this-month",
+    "last-month": "node analyze.js --last-month"
+  },
+  "keywords": ["cursor", "ai", "analytics", "usage", "chat", "tokens", "statistics"],
+  "author": "Daniel Jílek",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^9.2.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xaverric/cursor-usage-analyzer.git"
+  }
+}
+
