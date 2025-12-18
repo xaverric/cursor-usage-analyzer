@@ -363,8 +363,33 @@ function extractConversations(startTime, endTime, apiCalls = []) {
           filesChangedCount: composer.filesChangedCount || 0
         };
 
-        // Match API calls if available
-        const matchedCalls = matchAPICallsToConversation(conv, apiCalls);
+        conversations.push(conv);
+      } catch (e) {
+        // Silently skip invalid composers
+      }
+    }
+
+    // Match API calls to conversations WITHOUT double-counting
+    // Each API call should only be matched to ONE conversation
+    if (apiCalls.length > 0) {
+      const usedApiCallIndices = new Set();
+
+      for (const conv of conversations) {
+        const availableApiCalls = apiCalls.filter((_, idx) => !usedApiCallIndices.has(idx));
+        const matchedCalls = matchAPICallsToConversation(conv, availableApiCalls);
+
+        // Mark these API calls as used
+        matchedCalls.forEach(call => {
+          const originalIndex = apiCalls.findIndex(c =>
+            c.timestamp === call.timestamp &&
+            c.model === call.model &&
+            c.totalTokens === call.totalTokens
+          );
+          if (originalIndex !== -1) {
+            usedApiCallIndices.add(originalIndex);
+          }
+        });
+
         conv.apiCalls = matchedCalls;
         conv.apiCallCount = matchedCalls.length;
 
@@ -377,11 +402,21 @@ function extractConversations(startTime, endTime, apiCalls = []) {
           totalTokens: matchedCalls.reduce((sum, c) => sum + c.totalTokens, 0),
           cost: matchedCalls.reduce((sum, c) => sum + c.cost, 0)
         };
-
-        conversations.push(conv);
-      } catch (e) {
-        // Silently skip invalid composers
       }
+    } else {
+      // No API calls to match
+      conversations.forEach(conv => {
+        conv.apiCalls = [];
+        conv.apiCallCount = 0;
+        conv.apiTokens = {
+          inputWithCache: 0,
+          inputWithoutCache: 0,
+          cacheRead: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cost: 0
+        };
+      });
     }
 
     db.close();
@@ -560,8 +595,13 @@ async function main() {
   let apiCalls = [];
   if (csvPath) {
     console.log(`CSV file: ${csvPath}`);
-    apiCalls = parseCSVUsage(csvPath);
-    console.log(`Parsed ${apiCalls.length} API calls from CSV\n`);
+    const allApiCalls = parseCSVUsage(csvPath);
+    // Filter API calls to only those within the date range
+    apiCalls = allApiCalls.filter(call =>
+      call.timestamp >= startOfDay && call.timestamp <= endOfDay
+    );
+    console.log(`Parsed ${allApiCalls.length} API calls from CSV`);
+    console.log(`Filtered to ${apiCalls.length} API calls within date range\n`);
   } else {
     console.log('No CSV file provided (use --csv path/to/file.csv to include API token data)\n');
   }
