@@ -1,7 +1,7 @@
 {
   "name": "cursor-usage-analyzer",
-  "version": "0.1.0",
-  "description": "Analyze and visualize your Cursor AI editor usage with interactive reports",
+  "version": "0.2.0",
+  "description": "Analyze and visualize your Cursor AI editor usage with interactive reports including API token tracking and costs",
   "main": "analyze.js",
   "type": "module",
   "bin": {
@@ -18,7 +18,8 @@
   "author": "Daniel Jílek",
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^9.2.2"
+    "better-sqlite3": "^9.2.2",
+    "csv-parse": "^5.5.3"
   },
   "repository": {
     "type": "git",

@@ -5,11 +5,13 @@ A powerful Node.js tool to analyze and visualize your Cursor AI editor usage. Ex
 ## Features
 
 - 📊 **Comprehensive Analytics**: Track conversations, messages, tokens, code changes, and more
+- 💰 **API Token Tracking**: Import CSV from Cursor dashboard to track actual API usage, costs, and billing
 - 📈 **Interactive Charts**: Visualize usage patterns with Chart.js-powered graphs
 - 🔍 **Smart Filtering**: Filter and sort conversations by project, model, date, and name
 - 📁 **Full Export**: Export complete conversation histories as readable text files
 - 🎯 **Project Detection**: Automatically resolves workspace names from Cursor's database
 - 📅 **Flexible Date Ranges**: Analyze single days, months, or custom periods
+- 🖥️ **Cross-Platform**: Works on Windows, macOS, and Linux
 
 ## Installation
 
@@ -86,7 +88,34 @@ npx cursor-usage-analyzer --last-month
 
 # This month
 npx cursor-usage-analyzer --this-month
+
+# Include API token usage from CSV export
+npx cursor-usage-analyzer --csv path/to/team-usage-events.csv
 ```
+
+### API Token Tracking (CSV Import)
+
+For detailed API usage tracking including actual tokens sent to Claude's API and costs, you can import CSV data from the Cursor dashboard:
+
+1. **Export CSV from Cursor**:
+   - Go to [Cursor Dashboard](https://cursor.com/dashboard)
+   - Navigate to Usage tab
+   - Click "Export" to download your usage CSV
+
+2. **Run analyzer with CSV**:
+   ```bash
+   npx cursor-usage-analyzer --csv ~/Downloads/team-usage-events-XXXXX-2025-12-18.csv
+   ```
+
+3. **What you get**:
+   - **Input Tokens** (with/without cache write)
+   - **Cache Read tokens**
+   - **Output tokens**
+   - **Total API tokens** (actual usage sent to Claude API)
+   - **Cost per conversation** (in USD)
+   - **API call count** per conversation
+
+The tool automatically matches API calls to conversations based on timestamp and model, giving you complete visibility into your actual usage and costs.
 
 ### NPM Scripts (Local Installation Only)
 
@@ -111,10 +140,21 @@ Name: Feature implementation
 Workspace: my-project
 Time: 12/8/2025, 2:30:45 PM
 Model: claude-4.5-sonnet-thinking
-Tokens: 15,234 / 200,000 (7.6%)
+Context Tokens: 15,234 / 200,000 (7.6%)
 Changes: +245 -12 lines in 8 files
 Messages: 23
+
+API TOKEN USAGE (from dashboard export):
+  API Calls: 3
+  Input (w/ Cache Write): 12,456
+  Input (w/o Cache Write): 1,234
+  Cache Read: 45,678
+  Output Tokens: 2,345
+  Total API Tokens: 61,713
+  Cost: $0.23
 ```
+
+**Note**: API token data only appears when using `--csv` flag
 
 ### 2. HTML Report (`report.html`)
 
@@ -137,25 +177,69 @@ Interactive dashboard featuring:
 - Filter by project, model, name, or date range
 - View complete conversation metadata
 
-## Data Source
+### Opening the Report
 
-The analyzer reads from Cursor's local SQLite database:
+After generation, open the HTML report with:
+
+**macOS:**
+```bash
+open cursor-logs-export/report.html
+```
+
+**Windows:**
+```cmd
+start cursor-logs-export/report.html
+```
+
+**Linux:**
+```bash
+xdg-open cursor-logs-export/report.html
+```
+
+Or simply double-click `report.html` in your file explorer.
+
+## Data Sources
+
+### 1. Local SQLite Database (Required)
+
+The analyzer reads from Cursor's local SQLite database at platform-specific locations:
+
+**macOS:**
 ```
 ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
 ```
 
-It extracts:
+**Windows:**
+```
+%APPDATA%\Cursor\User\globalStorage\state.vscdb
+```
+
+**Linux:**
+```
+~/.config/Cursor/User/globalStorage/state.vscdb
+```
+
+From the database, it extracts:
 - **Conversation metadata**: Names, timestamps, models
 - **Message content**: Full chat history (user prompts & AI responses)
 - **Code changes**: Lines added/removed, files modified
-- **Token usage**: Context tokens used and limits
+- **Context token usage**: Tokens in conversation context window
 - **Project information**: Workspace paths and names
+
+### 2. CSV Export (Optional, for API Token Tracking)
+
+When you provide a CSV export from Cursor's dashboard using `--csv`:
+- **API token usage**: Actual tokens sent to Claude API (input with/without cache, cache reads, output)
+- **Cost tracking**: Exact costs in USD per conversation
+- **API call details**: Number of API calls, model used, timestamps
+
+The tool automatically matches CSV data to conversations based on timestamps and models, giving you a complete picture of both context usage and actual API consumption.
 
 ## Requirements
 
 - **Node.js**: v14 or higher
 - **Cursor Editor**: Must have conversations stored locally
-- **OS**: macOS (paths are macOS-specific)
+- **OS**: Windows, macOS, or Linux
 
 ## Project Structure
 
@@ -200,9 +284,22 @@ npx cursor-usage-analyzer --date 2025-11-15
 ## Troubleshooting
 
 ### "Database not found"
-Ensure Cursor has been used and conversations exist. Database path:
+Ensure Cursor has been used and conversations exist. Check the database path for your platform:
+
+**macOS:**
 ```
 ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
+```
+
+**Windows:**
+```
+%APPDATA%\Cursor\User\globalStorage\state.vscdb
+```
+(Usually: `C:\Users\YourUsername\AppData\Roaming\Cursor\User\globalStorage\state.vscdb`)
+
+**Linux:**
+```
+~/.config/Cursor/User/globalStorage/state.vscdb
 ```
 
 ### "No conversations found"

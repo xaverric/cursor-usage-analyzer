@@ -5,10 +5,40 @@ import path from 'path';
 import os from 'os';
 import Database from 'better-sqlite3';
 import { generateHTMLReport } from './html-template.js';
+import { parse } from 'csv-parse/sync';
+
+// Get Cursor storage paths based on OS
+function getCursorPaths() {
+  const platform = os.platform();
+  const home = os.homedir();
+  
+  if (platform === 'darwin') {
+    // macOS
+    return {
+      global: path.join(home, 'Library/Application Support/Cursor/User/globalStorage'),
+      workspace: path.join(home, 'Library/Application Support/Cursor/User/workspaceStorage')
+    };
+  } else if (platform === 'win32') {
+    // Windows
+    const appData = process.env.APPDATA || path.join(home, 'AppData/Roaming');
+    return {
+      global: path.join(appData, 'Cursor/User/globalStorage'),
+      workspace: path.join(appData, 'Cursor/User/workspaceStorage')
+    };
+  } else {
+    // Linux
+    const configHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+    return {
+      global: path.join(configHome, 'Cursor/User/globalStorage'),
+      workspace: path.join(configHome, 'Cursor/User/workspaceStorage')
+    };
+  }
+}
 
 // Constants
-const CURSOR_GLOBAL_STORAGE = path.join(os.homedir(), 'Library/Application Support/Cursor/User/globalStorage');
-const CURSOR_WORKSPACE_STORAGE = path.join(os.homedir(), 'Library/Application Support/Cursor/User/workspaceStorage');
+const CURSOR_PATHS = getCursorPaths();
+const CURSOR_GLOBAL_STORAGE = CURSOR_PATHS.global;
+const CURSOR_WORKSPACE_STORAGE = CURSOR_PATHS.workspace;
 const OUTPUT_DIR = path.join(process.cwd(), 'cursor-logs-export');
 const CHATS_DIR = path.join(OUTPUT_DIR, 'chats');
 const REPORT_PATH = path.join(OUTPUT_DIR, 'report.html');
@@ -25,8 +55,14 @@ const setDayBounds = (date, start = true) => {
 // Parse command line arguments
 function parseArgs() {
   const args = process.argv.slice(2);
-  let startDate, endDate, dateStr;
-  
+  let startDate, endDate, dateStr, csvPath;
+
+  // Check for CSV path
+  const csvIdx = args.indexOf('--csv');
+  if (csvIdx !== -1 && args[csvIdx + 1]) {
+    csvPath = args[csvIdx + 1];
+  }
+
   if (args.includes('--last-month')) {
     const now = new Date();
     startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -57,12 +93,79 @@ function parseArgs() {
     startDate = endDate = new Date();
     dateStr = formatDate(startDate);
   }
-  
+
   return {
     startOfDay: setDayBounds(startDate, true).getTime(),
     endOfDay: setDayBounds(endDate, false).getTime(),
-    dateStr
+    dateStr,
+    csvPath
   };
+}
+
+// Parse CSV usage data from Cursor dashboard export
+function parseCSVUsage(csvPath) {
+  if (!csvPath || !fs.existsSync(csvPath)) {
+    return [];
+  }
+
+  try {
+    const content = fs.readFileSync(csvPath, 'utf-8');
+    const records = parse(content, {
+      columns: true,
+      skip_empty_lines: true
+    });
+
+    return records.map(r => ({
+      timestamp: new Date(r.Date).getTime(),
+      user: r.User,
+      kind: r.Kind,
+      model: r.Model,
+      maxMode: r['Max Mode'],
+      inputWithCache: parseInt(r['Input (w/ Cache Write)']) || 0,
+      inputWithoutCache: parseInt(r['Input (w/o Cache Write)']) || 0,
+      cacheRead: parseInt(r['Cache Read']) || 0,
+      outputTokens: parseInt(r['Output Tokens']) || 0,
+      totalTokens: parseInt(r['Total Tokens']) || 0,
+      cost: parseFloat(r.Cost) || 0
+    }));
+  } catch (e) {
+    console.error('Error parsing CSV:', e.message);
+    return [];
+  }
+}
+
+// Match API calls to a conversation based on timestamp and model
+function matchAPICallsToConversation(conv, apiCalls, timeWindow = 5 * 60 * 1000) {
+  if (!apiCalls || apiCalls.length === 0) return [];
+
+  const convStart = conv.timestamp;
+  const convEnd = conv.messages.length > 0
+    ? Math.max(...conv.messages.map(m => m.timestamp))
+    : convStart;
+
+  const normalizeModel = (model) => {
+    if (!model) return 'unknown';
+    const m = model.toLowerCase();
+    if (m.includes('sonnet')) return 'sonnet';
+    if (m.includes('opus')) return 'opus';
+    if (m.includes('composer')) return 'composer';
+    if (m === 'auto' || m === 'default' || m === 'unknown') return 'any';
+    return model;
+  };
+
+  const convModel = normalizeModel(conv.model);
+
+  return apiCalls.filter(call => {
+    const callModel = normalizeModel(call.model);
+    const timeMatch = call.timestamp >= (convStart - timeWindow) &&
+                     call.timestamp <= (convEnd + timeWindow);
+
+    const modelMatch = convModel === 'any' ||
+                      callModel === 'any' ||
+                      convModel === callModel;
+
+    return timeMatch && modelMatch;
+  });
 }
 
 // Extract text from various bubble formats
@@ -185,21 +288,21 @@ function resolveWorkspace(composerData, headers, db, composerId) {
 }
 
 // Extract conversations from database
-function extractConversations(startTime, endTime) {
+function extractConversations(startTime, endTime, apiCalls = []) {
   const dbPath = path.join(CURSOR_GLOBAL_STORAGE, 'state.vscdb');
-  
+
   if (!fs.existsSync(dbPath)) {
     console.log('Database not found');
     return [];
   }
-  
+
   try {
     const db = new Database(dbPath, { readonly: true });
-    
+
     // Load all bubbles
     const bubbleMap = {};
     const bubbleRows = db.prepare("SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'").all();
-    
+
     for (const row of bubbleRows) {
       try {
         const bubbleId = row.key.split(':')[2];
@@ -207,34 +310,34 @@ function extractConversations(startTime, endTime) {
         if (bubble) bubbleMap[bubbleId] = bubble;
       } catch (e) {}
     }
-    
+
     // Load composers
     const composerRows = db.prepare(
       "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%' AND value LIKE '%fullConversationHeadersOnly%'"
     ).all();
-    
+
     const conversations = [];
-    
+
     for (const row of composerRows) {
       try {
         const composerId = row.key.split(':')[1];
         const composer = JSON.parse(row.value);
         const timestamp = composer.lastUpdatedAt || composer.createdAt || Date.now();
-        
+
         if (timestamp < startTime || timestamp > endTime) continue;
-        
+
         const headers = composer.fullConversationHeadersOnly || [];
         if (headers.length === 0) continue;
-        
+
         // Extract messages
         const messages = headers
           .map(h => {
             const bubble = bubbleMap[h.bubbleId];
             if (!bubble) return null;
-            
+
             const text = extractTextFromBubble(bubble);
             if (!text?.trim()) return null;
-            
+
             return {
               role: h.type === 1 ? 'user' : 'assistant',
               text: text.trim(),
@@ -242,10 +345,10 @@ function extractConversations(startTime, endTime) {
             };
           })
           .filter(Boolean);
-        
+
         if (messages.length === 0) continue;
-        
-        conversations.push({
+
+        const conv = {
           composerId,
           name: composer.name || 'Untitled Chat',
           timestamp,
@@ -258,12 +361,29 @@ function extractConversations(startTime, endTime) {
           totalLinesAdded: composer.totalLinesAdded || 0,
           totalLinesRemoved: composer.totalLinesRemoved || 0,
           filesChangedCount: composer.filesChangedCount || 0
-        });
+        };
+
+        // Match API calls if available
+        const matchedCalls = matchAPICallsToConversation(conv, apiCalls);
+        conv.apiCalls = matchedCalls;
+        conv.apiCallCount = matchedCalls.length;
+
+        // Sum up API tokens
+        conv.apiTokens = {
+          inputWithCache: matchedCalls.reduce((sum, c) => sum + c.inputWithCache, 0),
+          inputWithoutCache: matchedCalls.reduce((sum, c) => sum + c.inputWithoutCache, 0),
+          cacheRead: matchedCalls.reduce((sum, c) => sum + c.cacheRead, 0),
+          outputTokens: matchedCalls.reduce((sum, c) => sum + c.outputTokens, 0),
+          totalTokens: matchedCalls.reduce((sum, c) => sum + c.totalTokens, 0),
+          cost: matchedCalls.reduce((sum, c) => sum + c.cost, 0)
+        };
+
+        conversations.push(conv);
       } catch (e) {
         // Silently skip invalid composers
       }
     }
-    
+
     db.close();
     return conversations;
   } catch (error) {
@@ -278,9 +398,9 @@ function exportConversation(conv, index, dateStr) {
   const timeStr = timestamp.toTimeString().split(' ')[0].replace(/:/g, '-');
   const workspaceShort = conv.workspace.substring(0, 15).replace(/[^a-zA-Z0-9]/g, '_');
   const filename = `${dateStr}_${timeStr}_${workspaceShort}_conv${index}.txt`;
-  
+
   const percentUsed = (conv.contextTokensUsed / conv.contextTokenLimit * 100).toFixed(1);
-  
+
   const lines = [
     '='.repeat(80),
     `CONVERSATION #${index}`,
@@ -288,18 +408,34 @@ function exportConversation(conv, index, dateStr) {
     `Workspace: ${conv.workspace}`,
     `Time: ${timestamp.toLocaleString('en-US')}`,
     `Model: ${conv.model}`,
-    `Tokens: ${conv.contextTokensUsed.toLocaleString()} / ${conv.contextTokenLimit.toLocaleString()} (${percentUsed}%)`,
+    `Context Tokens: ${conv.contextTokensUsed.toLocaleString()} / ${conv.contextTokenLimit.toLocaleString()} (${percentUsed}%)`,
     `Changes: +${conv.totalLinesAdded} -${conv.totalLinesRemoved} lines in ${conv.filesChangedCount} files`,
     `Messages: ${conv.messageCount}`,
     `Composer ID: ${conv.composerId}`,
-    '='.repeat(80),
     ''
   ];
-  
+
+  // Add API token information if available
+  if (conv.apiCallCount > 0) {
+    lines.push(
+      'API TOKEN USAGE (from dashboard export):',
+      `  API Calls: ${conv.apiCallCount}`,
+      `  Input (w/ Cache Write): ${conv.apiTokens.inputWithCache.toLocaleString()}`,
+      `  Input (w/o Cache Write): ${conv.apiTokens.inputWithoutCache.toLocaleString()}`,
+      `  Cache Read: ${conv.apiTokens.cacheRead.toLocaleString()}`,
+      `  Output Tokens: ${conv.apiTokens.outputTokens.toLocaleString()}`,
+      `  Total API Tokens: ${conv.apiTokens.totalTokens.toLocaleString()}`,
+      `  Cost: $${conv.apiTokens.cost.toFixed(2)}`,
+      ''
+    );
+  }
+
+  lines.push('='.repeat(80), '');
+
   for (const msg of conv.messages) {
     const msgTime = new Date(msg.timestamp).toLocaleTimeString('en-US');
     const role = msg.role.toUpperCase();
-    
+
     lines.push(
       '',
       '-'.repeat(80),
@@ -308,9 +444,9 @@ function exportConversation(conv, index, dateStr) {
       msg.text
     );
   }
-  
+
   lines.push('', '='.repeat(80), 'End of conversation', '='.repeat(80));
-  
+
   fs.writeFileSync(path.join(CHATS_DIR, filename), lines.join('\n'), 'utf-8');
   return filename;
 }
@@ -318,7 +454,7 @@ function exportConversation(conv, index, dateStr) {
 // Generate statistics
 function generateStats(conversations, startOfDay, endOfDay) {
   const daysDiff = Math.ceil((endOfDay - startOfDay) / (1000 * 60 * 60 * 24));
-  
+
   const stats = {
     totalConversations: conversations.length,
     totalMessages: 0,
@@ -326,6 +462,15 @@ function generateStats(conversations, startOfDay, endOfDay) {
     totalLinesAdded: 0,
     totalLinesRemoved: 0,
     totalFilesChanged: 0,
+    totalApiCalls: 0,
+    totalApiTokens: {
+      inputWithCache: 0,
+      inputWithoutCache: 0,
+      cacheRead: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cost: 0
+    },
     modelUsage: {},
     workspaceUsage: {},
     hourlyDistribution: Array(24).fill(0),
@@ -334,26 +479,37 @@ function generateStats(conversations, startOfDay, endOfDay) {
     conversations: [],
     generatedAt: new Date().toLocaleString('en-US')
   };
-  
+
   for (const conv of conversations) {
     const ts = new Date(conv.timestamp);
-    
+
     stats.totalMessages += conv.messageCount;
     stats.totalTokens += conv.contextTokensUsed;
     stats.totalLinesAdded += conv.totalLinesAdded;
     stats.totalLinesRemoved += conv.totalLinesRemoved;
     stats.totalFilesChanged += conv.filesChangedCount;
-    
+
+    // Add API token stats
+    if (conv.apiCallCount > 0) {
+      stats.totalApiCalls += conv.apiCallCount;
+      stats.totalApiTokens.inputWithCache += conv.apiTokens.inputWithCache;
+      stats.totalApiTokens.inputWithoutCache += conv.apiTokens.inputWithoutCache;
+      stats.totalApiTokens.cacheRead += conv.apiTokens.cacheRead;
+      stats.totalApiTokens.outputTokens += conv.apiTokens.outputTokens;
+      stats.totalApiTokens.totalTokens += conv.apiTokens.totalTokens;
+      stats.totalApiTokens.cost += conv.apiTokens.cost;
+    }
+
     stats.modelUsage[conv.model] = (stats.modelUsage[conv.model] || 0) + 1;
     stats.workspaceUsage[conv.workspace] = (stats.workspaceUsage[conv.workspace] || 0) + 1;
     stats.hourlyDistribution[ts.getHours()]++;
-    
+
     const dateKey = ts.toLocaleDateString('en-US');
     stats.dailyDistribution[dateKey] = (stats.dailyDistribution[dateKey] || 0) + 1;
-    
+
     const firstUserMsg = conv.messages.find(m => m.role === 'user');
     const preview = firstUserMsg?.text.substring(0, 100) + (firstUserMsg?.text.length > 100 ? '...' : '') || '(no user message)';
-    
+
     stats.conversations.push({
       timestamp: conv.timestamp,
       time: ts.toLocaleTimeString('en-US'),
@@ -365,49 +521,74 @@ function generateStats(conversations, startOfDay, endOfDay) {
       messages: conv.messageCount,
       tokens: conv.contextTokensUsed,
       contextLimit: conv.contextTokenLimit,
+      apiCallCount: conv.apiCallCount || 0,
+      apiTokens: conv.apiTokens,
       linesChanged: `+${conv.totalLinesAdded}/-${conv.totalLinesRemoved}`,
       files: conv.filesChangedCount,
       preview
     });
   }
-  
+
   stats.conversations.sort((a, b) => a.timestamp - b.timestamp);
-  
+
   return stats;
 }
 
 // Main
 async function main() {
   console.log('Cursor Usage Analyzer v2\n');
-  
-  const { startOfDay, endOfDay, dateStr } = parseArgs();
-  
+
+  // Check if Cursor storage exists
+  if (!fs.existsSync(CURSOR_GLOBAL_STORAGE)) {
+    console.error('Error: Cursor storage directory not found!');
+    console.error(`Expected location: ${CURSOR_GLOBAL_STORAGE}`);
+    console.error('\nPossible reasons:');
+    console.error('  1. Cursor is not installed');
+    console.error('  2. Cursor has never been run');
+    console.error('  3. Different installation path\n');
+    console.error(`Detected OS: ${os.platform()}`);
+    process.exit(1);
+  }
+
+  const { startOfDay, endOfDay, dateStr, csvPath } = parseArgs();
+
   console.log(`Analyzing: ${dateStr}`);
-  console.log(`Period: ${new Date(startOfDay).toLocaleString('en-US')} - ${new Date(endOfDay).toLocaleString('en-US')}\n`);
-  
+  console.log(`Period: ${new Date(startOfDay).toLocaleString('en-US')} - ${new Date(endOfDay).toLocaleString('en-US')}`);
+  console.log(`Platform: ${os.platform()}`);
+
+  // Parse CSV if provided
+  let apiCalls = [];
+  if (csvPath) {
+    console.log(`CSV file: ${csvPath}`);
+    apiCalls = parseCSVUsage(csvPath);
+    console.log(`Parsed ${apiCalls.length} API calls from CSV\n`);
+  } else {
+    console.log('No CSV file provided (use --csv path/to/file.csv to include API token data)\n');
+  }
+
   // Prepare output folders
   if (fs.existsSync(OUTPUT_DIR)) fs.rmSync(OUTPUT_DIR, { recursive: true });
   fs.mkdirSync(CHATS_DIR, { recursive: true });
-  
+
   console.log('Extracting conversations...');
-  
-  const conversations = extractConversations(startOfDay, endOfDay);
-  
+
+  const conversations = extractConversations(startOfDay, endOfDay, apiCalls);
+
   console.log(`Found ${conversations.length} conversations\n`);
-  
+
   if (conversations.length === 0) {
     console.log('No conversations found in specified period');
     return;
   }
-  
+
   console.log('Exporting conversations...');
   conversations.forEach((conv, i) => {
     exportConversation(conv, i + 1, dateStr);
   });
-  
+
   console.log('Generating statistics...');
   const stats = generateStats(conversations, startOfDay, endOfDay);
-  
+
   console.log('Generating HTML report...');
   try {
     generateHTMLReport(stats, dateStr, REPORT_PATH);
@@ -416,11 +597,20 @@ async function main() {
     console.error(e.stack);
     return;
   }
-  
+
   console.log('\nDone!\n');
   console.log(`Export folder: ${OUTPUT_DIR}`);
   console.log(`Conversations: ${conversations.length}`);
+  if (apiCalls.length > 0) {
+    console.log(`API Calls matched: ${stats.totalApiCalls}`);
+    console.log(`Total API tokens: ${stats.totalApiTokens.totalTokens.toLocaleString()}`);
+    console.log(`Total cost: $${stats.totalApiTokens.cost.toFixed(2)}`);
+  }
   console.log(`Report: ${REPORT_PATH}`);
+
+  // Platform-specific open command hint
+  const openCmd = os.platform() === 'win32' ? 'start' : os.platform() === 'darwin' ? 'open' : 'xdg-open';
+  console.log(`\nOpen report: ${openCmd} ${REPORT_PATH}`);
 }
 
 main().catch(console.error);

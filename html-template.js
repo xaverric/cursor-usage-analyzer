@@ -151,6 +151,29 @@ export function generateHTMLReport(stats, dateStr, reportPath) {
         <div class="stat-label">Context Tokens</div>
         <div class="stat-sublabel">Ø ${avgTokens.toLocaleString()} per conversation</div>
       </div>
+      ${stats.totalApiCalls > 0 ? `
+      <div class="stat">
+        <div class="stat-value">${stats.totalApiTokens.totalTokens.toLocaleString()}</div>
+        <div class="stat-label">API Tokens (Total)</div>
+        <div class="stat-sublabel">$${stats.totalApiTokens.cost.toFixed(2)} total cost</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.totalApiTokens.inputWithCache.toLocaleString()}</div>
+        <div class="stat-label">Input (w/ Cache Write)</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.totalApiTokens.cacheRead.toLocaleString()}</div>
+        <div class="stat-label">Cache Read</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.totalApiTokens.outputTokens.toLocaleString()}</div>
+        <div class="stat-label">Output Tokens</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.totalApiCalls}</div>
+        <div class="stat-label">API Calls</div>
+      </div>
+      ` : ''}
       <div class="stat">
         <div class="stat-value">+${stats.totalLinesAdded.toLocaleString()}</div>
         <div class="stat-label">Lines Added</div>
@@ -235,6 +258,11 @@ export function generateHTMLReport(stats, dateStr, reportPath) {
           <th class="sortable" data-column="model" data-type="string">Model</th>
           <th class="sortable" data-column="messages" data-type="number">Messages</th>
           <th class="sortable" data-column="tokens" data-type="number">Context Tokens</th>
+          ${stats.totalApiCalls > 0 ? `
+          <th class="sortable" data-column="apiTokens" data-type="number">API Tokens</th>
+          <th class="sortable" data-column="apiCost" data-type="number">Cost</th>
+          <th class="sortable" data-column="apiCalls" data-type="number">API Calls</th>
+          ` : ''}
           <th class="sortable" data-column="linesChanged" data-type="string">Changes</th>
           <th class="sortable" data-column="files" data-type="number">Files</th>
         </tr>
@@ -248,6 +276,11 @@ export function generateHTMLReport(stats, dateStr, reportPath) {
              <td data-value="${c.model}"><small>${c.model}</small></td>
              <td data-value="${c.messages}">${c.messages}</td>
              <td data-value="${c.tokens}"><small>${c.tokens.toLocaleString()} / ${c.contextLimit.toLocaleString()}</small></td>
+             ${stats.totalApiCalls > 0 ? `
+             <td data-value="${c.apiTokens?.totalTokens || 0}"><small>${(c.apiTokens?.totalTokens || 0).toLocaleString()}</small></td>
+             <td data-value="${c.apiTokens?.cost || 0}"><small>$${(c.apiTokens?.cost || 0).toFixed(2)}</small></td>
+             <td data-value="${c.apiCallCount || 0}">${c.apiCallCount || 0}</td>
+             ` : ''}
              <td data-value="${c.linesChanged}">${c.linesChanged}</td>
              <td data-value="${c.files}">${c.files}</td>
            </tr>
